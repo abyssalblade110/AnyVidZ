@@ -5,13 +5,13 @@ from .models import VideoDownload
 from .serializers import VideoDownloadSerializer
 import yt_dlp
 import os
-from moviepy.editor import VideoFileClip
-from django.utils import timezone
-import time
-from django.http import FileResponse
+from django.http import Http404
+from django.urls import reverse
+from django.views import View
+from django.http import HttpResponse
 
 class VideoDownloadViewSet(viewsets.ModelViewSet):
-    queryset = VideoDownload.objects.all()  # Keep this to satisfy ModelViewSet
+    queryset = VideoDownload.objects.all()
     serializer_class = VideoDownloadSerializer
 
     @action(detail=False, methods=['post'])
@@ -25,31 +25,33 @@ class VideoDownloadViewSet(viewsets.ModelViewSet):
         if not file_path:
             return Response({'error': 'Failed to download or convert video'}, status=500)
 
-        # Response without file_path, as requested
-        response_data = {
-            'url': url,
-            'action': action,
-            'quality': quality,
-            'file_path': None,
-            'timestamp': timezone.now().isoformat()  # Add current timestamp
-        }
+        # Save relevant data to the database
+        video_download = VideoDownload.objects.create(url=url, action=action, quality=quality)
 
-        return Response(response_data, status=200)
+        # Create a response URL for the user to download
+        download_url = reverse('download-file', kwargs={'file_name': os.path.basename(file_path)})
 
-    @action(detail=False, methods=['post'])
-    def bulk_download(self, request):
-        # Placeholder for bulk download functionality
-        return Response({'error': 'Bulk download not implemented'}, status=501)
+        return Response({'download_url': download_url}, status=200)
 
+class DownloadFileView(View):
+    def get(self, request, file_name):
+        file_path = os.path.join('path/to/your/download/directory', file_name)  # Adjust to your directory
+        try:
+            with open(file_path, 'rb') as f:
+                response = HttpResponse(f.read(), content_type='application/octet-stream')
+                response['Content-Disposition'] = f'attachment; filename="{file_name}"'
+                return response
+        except FileNotFoundError:
+            raise Http404("File does not exist")
 
 def download_video(url, quality='best', convert_to_mp3=False):
-    output_folder = os.path.join(os.path.expanduser('~'), 'Downloads')  # Ensure this path exists
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    # Define a directory to store downloaded videos
+    download_dir = 'path/to/your/download/directory'  # Update this to your desired download location
+    os.makedirs(download_dir, exist_ok=True)
 
     ydl_opts = {
         'format': 'bestaudio/best' if convert_to_mp3 else quality,
-        'outtmpl': os.path.join(output_folder, '%(title)s.%(ext)s'),  # Ensure correct file naming
+        'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
         'quiet': True,
     }
 
@@ -57,42 +59,7 @@ def download_video(url, quality='best', convert_to_mp3=False):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
             file_name = f"{info_dict['title']}.{info_dict['ext']}"
-            file_path = os.path.join(output_folder, file_name)
-
-            print(f"Downloaded file path: {file_path}")  # Ensure this shows the correct path
-
-            if convert_to_mp3 and file_path.endswith('.mp4'):
-                mp3_file_path = os.path.join(output_folder, f"{os.path.splitext(file_name)[0]}.mp3")
-                convert_to_mp3_format(file_path, mp3_file_path)
-                return mp3_file_path
-
-            return file_path
+            return os.path.join(download_dir, file_name)  # Return the full path
     except Exception as e:
         print(f"Error downloading video: {e}")
-        return None
-
-
-
-def convert_to_mp3_format(mp4_file_path, mp3_file_path):
-    try:
-        video = VideoFileClip(mp4_file_path)
-        audio = video.audio
-        audio.write_audiofile(mp3_file_path)
-        audio.close()
-        video.close()
-        os.remove(mp4_file_path)
-    except Exception as e:
-        print(f"Error converting to MP3: {e}")
-        return None
-
-
-# Inside your view if you want to return a file to the user
-def serve_file_response(file_path):
-    file_name = os.path.basename(file_path)
-    try:
-        file_response = FileResponse(open(file_path, 'rb'), as_attachment=True, filename=file_name)
-        file_response['Content-Disposition'] = f'attachment; filename="{file_name}"'
-        return file_response
-    except Exception as e:
-        print(f"Error serving file: {e}")
         return None
